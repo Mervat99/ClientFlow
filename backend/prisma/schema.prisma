@@ -1,0 +1,143 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                String         @id @default(uuid())
+  name              String
+  email             String         @unique
+  password          String
+  role              Role           @default(CLIENT)
+  isActive          Boolean        @default(true)
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  client            Client?
+  employee          Employee?
+  uploadedDocuments Document[]     @relation("DocumentUploader")
+  notifications     Notification[]
+}
+
+model Department {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  employees Employee[]
+}
+
+model Employee {
+  id           String              @id @default(uuid())
+  userId       String              @unique
+  departmentId String?
+  department   Department?         @relation(fields: [departmentId], references: [id])
+  user         User                @relation(fields: [userId], references: [id])
+  assignments  RequestAssignment[]
+}
+
+model Client {
+  id          String     @id @default(uuid())
+  userId      String     @unique
+  companyName String?
+  phone       String?
+  user        User       @relation(fields: [userId], references: [id])
+  requests    Request[]
+  documents   Document[]
+}
+
+model Service {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+  requests    Request[]
+}
+
+model Request {
+  id            String                 @id @default(uuid())
+  clientId      String
+  serviceId     String
+  title         String
+  description   String?
+  status        RequestStatus          @default(NEW)
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  client        Client                 @relation(fields: [clientId], references: [id])
+  service       Service                @relation(fields: [serviceId], references: [id])
+  assignments   RequestAssignment[]
+  statusHistory RequestStatusHistory[]
+  documents     Document[]
+}
+
+model RequestAssignment {
+  requestId  String
+  employeeId String
+  assignedAt DateTime @default(now())
+  employee   Employee @relation(fields: [employeeId], references: [id])
+  request    Request  @relation(fields: [requestId], references: [id])
+
+  @@id([requestId, employeeId])
+}
+
+model RequestStatusHistory {
+  id        String         @id @default(uuid())
+  requestId String
+  oldStatus RequestStatus?
+  newStatus RequestStatus
+  changedAt DateTime       @default(now())
+  reason    String?
+  request   Request        @relation(fields: [requestId], references: [id])
+}
+
+model Document {
+  id           String   @id @default(uuid())
+  requestId    String
+  clientId     String
+  uploadedById String
+  originalName String
+  storedName   String   @unique
+  mimeType     String
+  size         Int
+  filePath     String
+  createdAt    DateTime @default(now())
+
+  request    Request @relation(fields: [requestId], references: [id])
+  client     Client  @relation(fields: [clientId], references: [id])
+  uploadedBy User    @relation("DocumentUploader", fields: [uploadedById], references: [id])
+
+  @@index([requestId])
+  @@index([clientId])
+  @@index([uploadedById])
+}
+
+enum Role {
+  ADMIN
+  EMPLOYEE
+  CLIENT
+}
+
+enum RequestStatus {
+  NEW
+  IN_PROGRESS
+  WAITING_FOR_CLIENT
+  COMPLETED
+  CANCELLED
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  title     String
+  message   String
+  type      String   @default("INFO")
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}

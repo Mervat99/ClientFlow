@@ -1,0 +1,1 @@
+import {IsOptional,IsString,IsIn,MaxLength} from 'class-validator'; export class UpdateRequestStatusDto{@IsIn(['NEW','IN_PROGRESS','WAITING_FOR_CLIENT','COMPLETED','CANCELLED']) status:'NEW'|'IN_PROGRESS'|'WAITING_FOR_CLIENT'|'COMPLETED'|'CANCELLED';@IsOptional()@IsString()@MaxLength(500)reason?:string;}

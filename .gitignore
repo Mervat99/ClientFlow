@@ -1,0 +1,32 @@
+
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build files
+dist/
+**/dist/
+*.tsbuildinfo
+
+# Environment secrets
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Uploaded files
+uploads/
+**/uploads/
+
+# Temporary files
+coverage/
+*.log
+.DS_Store
+
+# Files not needed in GitHub
+/backend/setAuthenticated(true)
+/backend/{
+/backend/schema-diff.sql
+/backend/prisma/schema_backup.prisma
