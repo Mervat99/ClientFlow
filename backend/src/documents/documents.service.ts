@@ -6,9 +6,10 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 
+import { Prisma } from '@prisma/client';
+import { UserRole } from '../auth/decorators/roles.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../notifications/notifications.service';
-import { UserRole } from '../auth/decorators/roles.decorator';
 import { unlink } from 'fs/promises';
 
 interface AuthUser {
@@ -24,18 +25,42 @@ export class DocumentsService {
     private readonly notifications: NotificationsService,
   ) {}
 
+  // Return only documents the current user is allowed to see.
   async findAll(user: AuthUser) {
-    const where =
-      user.role === UserRole.CLIENT
-        ? { client: { userId: user.userId } }
-        : {};
+    const where: Prisma.DocumentWhereInput = {};
+
+    if (user.role === UserRole.CLIENT) {
+      where.client = {
+        userId: user.userId,
+      };
+    } else if (user.role === UserRole.EMPLOYEE) {
+      where.request = {
+        assignments: {
+          some: {
+            employee: {
+              userId: user.userId,
+            },
+          },
+        },
+      };
+    } else if (user.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('You cannot access documents');
+    }
 
     return this.prisma.document.findMany({
       where,
       orderBy: {
         createdAt: 'desc',
       },
-      include: {
+      select: {
+        id: true,
+        requestId: true,
+        clientId: true,
+        uploadedById: true,
+        originalName: true,
+        mimeType: true,
+        size: true,
+        createdAt: true,
         request: {
           select: {
             id: true,
@@ -58,6 +83,62 @@ export class DocumentsService {
     });
   }
 
+  // Check whether a user can access a specific request.
+  private async assertCanAccessRequest(
+    requestId: string,
+    user: AuthUser,
+  ): Promise<void> {
+    if (user.role === UserRole.ADMIN) {
+      return;
+    }
+
+    if (user.role === UserRole.CLIENT) {
+      const request = await this.prisma.request.findFirst({
+        where: {
+          id: requestId,
+          client: {
+            userId: user.userId,
+          },
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!request) {
+        throw new ForbiddenException(
+          'You can only access documents belonging to your own requests',
+        );
+      }
+
+      return;
+    }
+
+    if (user.role === UserRole.EMPLOYEE) {
+      const assignment = await this.prisma.requestAssignment.findFirst({
+        where: {
+          requestId,
+          employee: {
+            userId: user.userId,
+          },
+        },
+        select: {
+          requestId: true,
+        },
+      });
+
+      if (!assignment) {
+        throw new ForbiddenException(
+          'You can only access documents for requests assigned to you',
+        );
+      }
+
+      return;
+    }
+
+    throw new ForbiddenException('You cannot access this request');
+  }
+
   async upload(
     file: Express.Multer.File,
     requestId: string,
@@ -72,11 +153,11 @@ export class DocumentsService {
       throw new BadRequestException('Request ID is required');
     }
 
-    let request;
-
     try {
-      request = await this.prisma.request.findUnique({
-        where: { id: requestId },
+      const request = await this.prisma.request.findUnique({
+        where: {
+          id: requestId,
+        },
         include: {
           client: {
             select: {
@@ -92,14 +173,7 @@ export class DocumentsService {
         throw new NotFoundException('Request not found');
       }
 
-      if (
-        user.role === UserRole.CLIENT &&
-        request.client.userId !== user.userId
-      ) {
-        throw new ForbiddenException(
-          'You can only upload files to your own requests',
-        );
-      }
+      await this.assertCanAccessRequest(requestId, user);
 
       const document = await this.prisma.document.create({
         data: {
@@ -112,7 +186,15 @@ export class DocumentsService {
           size: file.size,
           filePath: file.path,
         },
-        include: {
+        select: {
+          id: true,
+          requestId: true,
+          clientId: true,
+          uploadedById: true,
+          originalName: true,
+          mimeType: true,
+          size: true,
+          createdAt: true,
           uploadedBy: {
             select: {
               id: true,
@@ -123,7 +205,7 @@ export class DocumentsService {
         },
       });
 
-      // Send notifications without affecting the document upload.
+      // Notify relevant users after successful upload.
       try {
         if (user.role === UserRole.CLIENT) {
           const admins = await this.prisma.user.findMany({
@@ -164,7 +246,6 @@ export class DocumentsService {
 
       return document;
     } catch (error) {
-      // Remove the uploaded file only if the document was not saved.
       const documentExists = await this.prisma.document.findFirst({
         where: {
           storedName: file.filename,
@@ -182,15 +263,11 @@ export class DocumentsService {
     }
   }
 
+  // Used internally by the download endpoint.
   async findOne(id: string, user: AuthUser) {
     const document = await this.prisma.document.findUnique({
-      where: { id },
-      include: {
-        client: {
-          select: {
-            userId: true,
-          },
-        },
+      where: {
+        id,
       },
     });
 
@@ -198,14 +275,7 @@ export class DocumentsService {
       throw new NotFoundException('Document not found');
     }
 
-    if (
-      user.role === UserRole.CLIENT &&
-      document.client.userId !== user.userId
-    ) {
-      throw new ForbiddenException(
-        'You cannot access this document',
-      );
-    }
+    await this.assertCanAccessRequest(document.requestId, user);
 
     return document;
   }
@@ -223,10 +293,16 @@ export class DocumentsService {
     }
 
     await this.prisma.document.delete({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
-    await this.removePhysicalFile(document.filePath);
+    try {
+      await this.removePhysicalFile(document.filePath);
+    } catch (error) {
+      console.error('Failed to delete physical document:', error);
+    }
 
     return {
       message: 'Document deleted successfully',

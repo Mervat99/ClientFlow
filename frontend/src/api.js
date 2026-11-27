@@ -24,8 +24,14 @@ export const login = async (email, password) => {
     password,
   });
 
-  if (response.data.access_token) {
-    localStorage.setItem('access_token', response.data.access_token);
+  const { access_token, user } = response.data;
+
+  if (access_token) {
+    localStorage.setItem('access_token', access_token);
+  }
+
+  if (user) {
+    localStorage.setItem('user', JSON.stringify(user));
   }
 
   return response.data;
@@ -36,8 +42,13 @@ export const getDashboard = async () => {
   return response.data;
 };
 
+export const getRequests = async () => {
+  const response = await api.get('/requests');
+  return response.data;
+};
 export const logout = () => {
   localStorage.removeItem('access_token');
+  localStorage.removeItem('user');
 };
 
 export default api;

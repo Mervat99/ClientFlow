@@ -15,8 +15,8 @@ export default function Login({ onLogin }) {
     setLoading(true);
 
     try {
-      await login(email, password);
-      onLogin();
+      const data = await login(email, password);
+      onLogin(data.user);
     } catch (err) {
       setError(
         err.response?.data?.message || 'Login failed. Check your email and password.'
@@ -60,10 +60,16 @@ export default function Login({ onLogin }) {
         {error && <div className="login-error">{error}</div>}
 
         <button className="login-button" disabled={loading}>
-          {loading ? <LoaderCircle className="spin" /> : <>Sign in <ArrowRight size={18} /></>}
+          {loading ? (
+            <LoaderCircle className="spin" />
+          ) : (
+            <>Sign in <ArrowRight size={18} /></>
+          )}
         </button>
 
-        <span className="login-footer">ClientFlow CRM · Secure workspace</span>
+        <span className="login-footer">
+          ClientFlow CRM · Secure workspace
+        </span>
       </form>
     </main>
   );

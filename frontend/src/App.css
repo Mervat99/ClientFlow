@@ -3057,3 +3057,53 @@ a {
     flex-direction: column;
   }
 }
+
+.employee-tasks-panel {
+  margin-top: 24px;
+}
+
+.employee-task-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 0;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.employee-task-row:last-child {
+  border-bottom: none;
+}
+
+.employee-task-info {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  flex: 1;
+  min-width: 0;
+}
+
+.employee-task-info strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.employee-task-info span {
+  font-size: 12px;
+  color: #92929d;
+}
+
+.employee-task-status {
+  font-size: 12px;
+  color: #999cff;
+  text-align: right;
+}
+
+@media (max-width: 600px) {
+  .employee-task-row {
+    flex-wrap: wrap;
+  }
+
+  .employee-task-status {
+    margin-left: 42px;
+  }
+}

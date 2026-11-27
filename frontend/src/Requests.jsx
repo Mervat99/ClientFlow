@@ -11,7 +11,6 @@ import {
   Users,
   X,
   CalendarDays,
-  UserRound,
   BriefcaseBusiness,
   AlertCircle,
 } from 'lucide-react';
@@ -65,7 +64,24 @@ function formatDate(date) {
   });
 }
 
-export default function Requests() {
+function getStoredUser() {
+  try {
+    return JSON.parse(localStorage.getItem('user') || 'null');
+  } catch {
+    return null;
+  }
+}
+
+export default function Requests({ user }) {
+  const currentUser = user || getStoredUser();
+  const role = currentUser?.role?.toUpperCase();
+
+  const isAdmin = role === 'ADMIN';
+  const isEmployee = role === 'EMPLOYEE';
+  const isClient = role === 'CLIENT';
+
+  const canManageRequests = isAdmin || isEmployee;
+
   const [requests, setRequests] = useState([]);
   const [clients, setClients] = useState([]);
   const [employees, setEmployees] = useState([]);
@@ -98,18 +114,38 @@ export default function Requests() {
     setError('');
 
     try {
-      const [requestsData, clientsData, employeesData, servicesData] =
-        await Promise.all([
+      if (isAdmin) {
+        const [
+          requestsData,
+          clientsData,
+          employeesData,
+          servicesData,
+        ] = await Promise.all([
           getRequests(),
           getClients(),
           getEmployees(),
           getServices(),
         ]);
 
-      setRequests(Array.isArray(requestsData) ? requestsData : []);
-      setClients(Array.isArray(clientsData) ? clientsData : []);
-      setEmployees(Array.isArray(employeesData) ? employeesData : []);
-      setServices(Array.isArray(servicesData) ? servicesData : []);
+        setRequests(Array.isArray(requestsData) ? requestsData : []);
+        setClients(Array.isArray(clientsData) ? clientsData : []);
+        setEmployees(Array.isArray(employeesData) ? employeesData : []);
+        setServices(Array.isArray(servicesData) ? servicesData : []);
+      } else if (isEmployee || isClient) {
+        const [requestsData, servicesData] = await Promise.all([
+          getRequests(),
+          getServices(),
+        ]);
+
+        setRequests(Array.isArray(requestsData) ? requestsData : []);
+        setServices(Array.isArray(servicesData) ? servicesData : []);
+
+        setClients([]);
+        setEmployees([]);
+      } else {
+        setRequests([]);
+        setError('You do not have permission to view requests.');
+      }
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -154,8 +190,18 @@ export default function Requests() {
   const handleCreateRequest = async (event) => {
     event.preventDefault();
 
-    if (!form.title.trim() || !form.clientId || !form.serviceId) {
-      setError('Please complete the title, client and service fields.');
+    if (!isAdmin && !isClient) return;
+
+    if (
+      !form.title.trim() ||
+      !form.serviceId ||
+      (isAdmin && !form.clientId)
+    ) {
+      setError(
+        isAdmin
+          ? 'Please complete the title, client and service fields.'
+          : 'Please complete the title and service fields.'
+      );
       return;
     }
 
@@ -164,12 +210,19 @@ export default function Requests() {
     setSuccess('');
 
     try {
-      await createRequest({
+      const requestData = {
         title: form.title.trim(),
         description: form.description.trim(),
-        clientId: form.clientId,
         serviceId: form.serviceId,
-      });
+      };
+
+      // Only the administrator selects the client.
+      // The backend identifies the logged-in client automatically.
+      if (isAdmin) {
+        requestData.clientId = form.clientId;
+      }
+
+      await createRequest(requestData);
 
       setShowModal(false);
       setForm({
@@ -189,6 +242,8 @@ export default function Requests() {
   };
 
   const handleStatusChange = async (requestId, newStatus) => {
+    if (!canManageRequests) return;
+
     setUpdatingId(requestId);
     setError('');
     setSuccess('');
@@ -205,7 +260,14 @@ export default function Requests() {
   };
 
   const handleAssignEmployee = async (requestId, employeeId) => {
-    if (!employeeId) return;
+    if (!isAdmin || !employeeId) return;
+
+    const targetRequest = requests.find((request) => request.id === requestId);
+
+    if (['COMPLETED', 'CANCELLED'].includes(targetRequest?.status)) {
+      setError('Cannot assign an employee to a completed or cancelled request.');
+      return;
+    }
 
     setUpdatingId(requestId);
     setError('');
@@ -227,8 +289,22 @@ export default function Requests() {
       <div className="requests-heading">
         <div>
           <div className="requests-eyebrow">WORKSPACE / OPERATIONS</div>
-          <h1>Requests Management</h1>
-          <p>Manage client requests, track progress and assign your team.</p>
+
+          <h1>
+            {isAdmin
+              ? 'Requests Management'
+              : isClient
+                ? 'My Requests'
+                : 'My Assigned Requests'}
+          </h1>
+
+          <p>
+            {isAdmin
+              ? 'Manage client requests, track progress and assign your team.'
+              : isClient
+                ? 'Submit new requests and follow the progress of your services.'
+                : 'View your assigned requests and update their progress.'}
+          </p>
         </div>
 
         <div className="requests-heading-actions">
@@ -242,18 +318,20 @@ export default function Requests() {
             Refresh
           </button>
 
-          <button
-            className="requests-create-button"
-            type="button"
-            onClick={() => {
-              setError('');
-              setSuccess('');
-              setShowModal(true);
-            }}
-          >
-            <Plus size={17} />
-            New Request
-          </button>
+          {(isAdmin || isClient) && (
+            <button
+              className="requests-create-button"
+              type="button"
+              onClick={() => {
+                setError('');
+                setSuccess('');
+                setShowModal(true);
+              }}
+            >
+              <Plus size={17} />
+              New Request
+            </button>
+          )}
         </div>
       </div>
 
@@ -261,7 +339,11 @@ export default function Requests() {
         <div className="requests-alert requests-alert-error">
           <AlertCircle size={18} />
           <span>{error}</span>
-          <button type="button" onClick={() => setError('')} aria-label="Close error">
+          <button
+            type="button"
+            onClick={() => setError('')}
+            aria-label="Close error"
+          >
             <X size={16} />
           </button>
         </div>
@@ -271,7 +353,11 @@ export default function Requests() {
         <div className="requests-alert requests-alert-success">
           <CheckCircle2 size={18} />
           <span>{success}</span>
-          <button type="button" onClick={() => setSuccess('')} aria-label="Close message">
+          <button
+            type="button"
+            onClick={() => setSuccess('')}
+            aria-label="Close message"
+          >
             <X size={16} />
           </button>
         </div>
@@ -286,7 +372,7 @@ export default function Requests() {
             </div>
           </div>
           <strong>{stats.total}</strong>
-          <small>All client requests</small>
+          <small>{isAdmin ? 'All client requests' : isClient ? 'Your requests' : 'Your assigned requests'}</small>
         </div>
 
         <div className="requests-stat-card">
@@ -326,25 +412,46 @@ export default function Requests() {
       <div className="requests-content-panel">
         <div className="requests-panel-heading">
           <div>
-            <h2>All Requests</h2>
-            <p>View and manage every request submitted by your clients.</p>
+            <h2>
+              {isAdmin
+                ? 'All Requests'
+                : isClient
+                  ? 'My Requests'
+                  : 'Assigned Requests'}
+            </h2>
+
+            <p>
+              {isAdmin
+                ? 'View and manage every request submitted by your clients.'
+                : isClient
+                  ? 'View the requests you have submitted.'
+                  : 'View the requests assigned to you.'}
+            </p>
           </div>
+
           <span className="requests-count">
-            {filteredRequests.length} {filteredRequests.length === 1 ? 'request' : 'requests'}
+            {filteredRequests.length}{' '}
+            {filteredRequests.length === 1 ? 'request' : 'requests'}
           </span>
         </div>
 
         <div className="requests-table-toolbar">
           <div className="requests-search-box">
             <Search size={17} />
+
             <input
               type="text"
               placeholder="Search requests, clients, services..."
               value={search}
               onChange={(event) => setSearch(event.target.value)}
             />
+
             {search && (
-              <button type="button" onClick={() => setSearch('')} aria-label="Clear search">
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                aria-label="Clear search"
+              >
                 <X size={15} />
               </button>
             )}
@@ -361,13 +468,20 @@ export default function Requests() {
             <div className="requests-empty-icon">
               <ClipboardList size={28} />
             </div>
-            <h3>{search ? 'No matching requests' : 'No requests yet'}</h3>
+
+            <h3>{search ? 'No matching requests' : 'No requests found'}</h3>
+
             <p>
               {search
                 ? 'Try another search term.'
-                : 'Create your first client request to get started.'}
+                : isClient
+                  ? 'You have not submitted any requests yet.'
+                  : isAdmin
+                    ? 'Create your first client request to get started.'
+                    : 'You do not have any assigned requests yet.'}
             </p>
-            {!search && (
+
+            {!search && (isAdmin || isClient) && (
               <button
                 className="requests-create-button"
                 type="button"
@@ -384,10 +498,10 @@ export default function Requests() {
               <thead>
                 <tr>
                   <th>REQUEST</th>
-                  <th>CLIENT</th>
+                  {isAdmin && <th>CLIENT</th>}
                   <th>SERVICE</th>
                   <th>STATUS</th>
-                  <th>ASSIGNED TO</th>
+                  {!isClient && <th>ASSIGNED TO</th>}
                   <th>CREATED</th>
                 </tr>
               </thead>
@@ -405,21 +519,31 @@ export default function Requests() {
                           <div className="requests-row-icon">
                             <BriefcaseBusiness size={17} />
                           </div>
+
                           <div>
                             <strong>{request.title}</strong>
-                            <span>{request.description || 'No description provided'}</span>
+                            <span>
+                              {request.description || 'No description provided'}
+                            </span>
                           </div>
                         </div>
                       </td>
 
-                      <td>
-                        <div className="requests-person-cell">
-                          <div className="requests-avatar">
-                            {(request.client?.user?.name || 'C').charAt(0).toUpperCase()}
+                      {isAdmin && (
+                        <td>
+                          <div className="requests-person-cell">
+                            <div className="requests-avatar">
+                              {(request.client?.user?.name || 'C')
+                                .charAt(0)
+                                .toUpperCase()}
+                            </div>
+
+                            <span>
+                              {request.client?.user?.name || 'Unknown client'}
+                            </span>
                           </div>
-                          <span>{request.client?.user?.name || 'Unknown client'}</span>
-                        </div>
-                      </td>
+                        </td>
+                      )}
 
                       <td>
                         <span className="requests-service-name">
@@ -433,52 +557,72 @@ export default function Requests() {
                             <span className="requests-status-dot" />
                             {status.label}
                           </span>
-                          <select
-                            aria-label={`Change status for ${request.title}`}
-                            value={request.status}
-                            disabled={isUpdating}
-                            onChange={(event) =>
-                              handleStatusChange(request.id, event.target.value)
-                            }
-                          >
-                            {STATUS_OPTIONS.map((option) => (
-                              <option key={option.value} value={option.value}>
-                                {option.label}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </td>
 
-                      <td>
-                        {assignedId ? (
-                          <div className="requests-person-cell">
-                            <div className="requests-avatar employee-avatar">
-                              {getEmployeeName(request).charAt(0).toUpperCase()}
-                            </div>
-                            <span>{getEmployeeName(request)}</span>
-                          </div>
-                        ) : (
-                          <div className="requests-assign-control">
-                            <Users size={15} />
+                          {canManageRequests && (
                             <select
-                              aria-label={`Assign employee to ${request.title}`}
-                              defaultValue=""
+                              aria-label={`Change status for ${request.title}`}
+                              value={request.status}
                               disabled={isUpdating}
                               onChange={(event) =>
-                                handleAssignEmployee(request.id, event.target.value)
+                                handleStatusChange(request.id, event.target.value)
                               }
                             >
-                              <option value="">Assign employee</option>
-                              {employees.map((employee) => (
-                                <option key={employee.id} value={employee.id}>
-                                  {employee.user?.name || employee.name || 'Employee'}
+                              {STATUS_OPTIONS.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option.label}
                                 </option>
                               ))}
                             </select>
-                          </div>
-                        )}
+                          )}
+                        </div>
                       </td>
+
+                      {!isClient && (
+                        <td>
+                          {assignedId ? (
+                            <div className="requests-person-cell">
+                              <div className="requests-avatar employee-avatar">
+                                {getEmployeeName(request)
+                                  .charAt(0)
+                                  .toUpperCase()}
+                              </div>
+
+                              <span>{getEmployeeName(request)}</span>
+                            </div>
+                          ) : isAdmin ? (
+                            <div className="requests-assign-control">
+                              <Users size={15} />
+
+                              <select
+                                aria-label={`Assign employee to ${request.title}`}
+                                defaultValue=""
+                                disabled={
+                                  isUpdating ||
+                                  ['COMPLETED', 'CANCELLED'].includes(request.status)
+                                }
+                                title={
+                                  ['COMPLETED', 'CANCELLED'].includes(request.status)
+                                    ? 'Cannot assign employees to completed or cancelled requests'
+                                    : 'Assign an employee'
+                                }
+                                onChange={(event) =>
+                                  handleAssignEmployee(request.id, event.target.value)
+                                }
+                              >
+                                <option value="">Assign employee</option>
+
+                                {employees.map((employee) => (
+                                  <option key={employee.id} value={employee.id}>
+                                    {employee.user?.name || employee.name || 'Employee'}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          ) : (
+                            <span>Unassigned</span>
+                          )}
+                        </td>
+                      )}
 
                       <td>
                         <div className="requests-date-cell">
@@ -495,7 +639,7 @@ export default function Requests() {
         )}
       </div>
 
-      {showModal && (
+      {showModal && (isAdmin || isClient) && (
         <div
           className="requests-modal-backdrop"
           onMouseDown={(event) => {
@@ -510,9 +654,15 @@ export default function Requests() {
                 <div className="requests-modal-icon">
                   <Plus size={20} />
                 </div>
+
                 <h2>Create New Request</h2>
-                <p>Add a new service request for a client.</p>
+                <p>
+                  {isAdmin
+                    ? 'Add a new service request for a client.'
+                    : 'Submit a new service request.'}
+                </p>
               </div>
+
               <button
                 type="button"
                 className="requests-modal-close"
@@ -526,7 +676,10 @@ export default function Requests() {
 
             <form onSubmit={handleCreateRequest}>
               <label className="requests-form-field">
-                <span>Request Title <b>*</b></span>
+                <span>
+                  Request Title <b>*</b>
+                </span>
+
                 <input
                   type="text"
                   placeholder="e.g. Website Development"
@@ -541,8 +694,9 @@ export default function Requests() {
 
               <label className="requests-form-field">
                 <span>Description</span>
+
                 <textarea
-                  placeholder="Describe what the client needs..."
+                  placeholder="Describe what you need..."
                   maxLength={1000}
                   rows={4}
                   value={form.description}
@@ -552,26 +706,35 @@ export default function Requests() {
                 />
               </label>
 
-              <label className="requests-form-field">
-                <span>Client <b>*</b></span>
-                <select
-                  value={form.clientId}
-                  onChange={(event) =>
-                    setForm({ ...form, clientId: event.target.value })
-                  }
-                  required
-                >
-                  <option value="">Select a client</option>
-                  {clients.map((client) => (
-                    <option key={client.id} value={client.id}>
-                      {client.user?.name || client.name || client.id}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {isAdmin && (
+                <label className="requests-form-field">
+                  <span>
+                    Client <b>*</b>
+                  </span>
+
+                  <select
+                    value={form.clientId}
+                    onChange={(event) =>
+                      setForm({ ...form, clientId: event.target.value })
+                    }
+                    required
+                  >
+                    <option value="">Select a client</option>
+
+                    {clients.map((client) => (
+                      <option key={client.id} value={client.id}>
+                        {client.user?.name || client.name || client.id}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
 
               <label className="requests-form-field">
-                <span>Service <b>*</b></span>
+                <span>
+                  Service <b>*</b>
+                </span>
+
                 <select
                   value={form.serviceId}
                   onChange={(event) =>
@@ -580,6 +743,7 @@ export default function Requests() {
                   required
                 >
                   <option value="">Select a service</option>
+
                   {services.map((service) => (
                     <option key={service.id} value={service.id}>
                       {service.name}
@@ -597,6 +761,7 @@ export default function Requests() {
                 >
                   Cancel
                 </button>
+
                 <button
                   type="submit"
                   className="requests-create-button"

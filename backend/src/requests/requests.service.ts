@@ -4,6 +4,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
@@ -14,6 +15,12 @@ import { CreateRequestDto } from './dto/create-request.dto';
 import { UpdateRequestStatusDto } from './dto/update-request-status.dto';
 import { AssignRequestDto } from './dto/assign-request.dto';
 
+interface AuthUser {
+  userId: string;
+  email: string;
+  role: UserRole;
+}
+
 @Injectable()
 export class RequestsService {
   constructor(
@@ -21,9 +28,32 @@ export class RequestsService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  // Get all requests
-  getAllRequests() {
+  // Get requests according to the logged-in user's role
+  async getAllRequests(user: AuthUser) {
+    let where = {};
+
+    if (user.role === UserRole.EMPLOYEE) {
+      where = {
+        assignments: {
+          some: {
+            employee: {
+              userId: user.userId,
+            },
+          },
+        },
+      };
+    } else if (user.role === UserRole.CLIENT) {
+      where = {
+        client: {
+          userId: user.userId,
+        },
+      };
+    } else if (user.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Access denied');
+    }
+
     return this.prisma.request.findMany({
+      where,
       include: {
         client: {
           include: {
@@ -65,17 +95,66 @@ export class RequestsService {
   }
 
   // Create request
-  async createRequest(dto: CreateRequestDto) {
-    const client = await this.prisma.client.findUnique({
-      where: { id: dto.clientId },
-    });
+  async createRequest(dto: CreateRequestDto, user: AuthUser) {
+    let client;
 
-    if (!client) {
-      throw new NotFoundException('Client not found');
+    if (user.role === UserRole.CLIENT) {
+      // Clients can create requests only for themselves
+      client = await this.prisma.client.findUnique({
+        where: {
+          userId: user.userId,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              isActive: true,
+            },
+          },
+        },
+      });
+
+      if (!client) {
+        throw new NotFoundException('Client profile not found');
+      }
+
+      if (!client.user.isActive) {
+        throw new ForbiddenException('Account is inactive');
+      }
+    } else if (user.role === UserRole.ADMIN) {
+      if (!dto.clientId) {
+        throw new BadRequestException('Client ID is required');
+      }
+
+      client = await this.prisma.client.findUnique({
+        where: {
+          id: dto.clientId,
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              isActive: true,
+            },
+          },
+        },
+      });
+
+      if (!client) {
+        throw new NotFoundException('Client not found');
+      }
+
+      if (!client.user.isActive) {
+        throw new BadRequestException('Client account is inactive');
+      }
+    } else {
+      throw new ForbiddenException('You cannot create requests');
     }
 
     const service = await this.prisma.service.findUnique({
-      where: { id: dto.serviceId },
+      where: {
+        id: dto.serviceId,
+      },
     });
 
     if (!service) {
@@ -88,7 +167,12 @@ export class RequestsService {
 
     const request = await this.prisma.$transaction(async (tx) => {
       const newRequest = await tx.request.create({
-        data: dto,
+        data: {
+          clientId: client.id,
+          serviceId: dto.serviceId,
+          title: dto.title,
+          description: dto.description,
+        },
         include: {
           client: {
             include: {
@@ -116,10 +200,11 @@ export class RequestsService {
       return newRequest;
     });
 
-    // Notify client and administrators
+    // Notify client and active administrators
     const admins = await this.prisma.user.findMany({
       where: {
         role: UserRole.ADMIN,
+        isActive: true,
       },
       select: {
         id: true,
@@ -149,30 +234,105 @@ export class RequestsService {
     return request;
   }
 
-  // Update request status
+  // Validate allowed status transitions
+  private validateStatusTransition(
+    currentStatus: string,
+    newStatus: string,
+  ) {
+    const allowedTransitions: Record<string, string[]> = {
+      NEW: ['IN_PROGRESS', 'CANCELLED'],
+      IN_PROGRESS: [
+        'WAITING_FOR_CLIENT',
+        'COMPLETED',
+        'CANCELLED',
+      ],
+      WAITING_FOR_CLIENT: ['IN_PROGRESS', 'CANCELLED'],
+      COMPLETED: [],
+      CANCELLED: [],
+    };
+
+    const allowed = allowedTransitions[currentStatus] ?? [];
+
+    if (!allowed.includes(newStatus)) {
+      throw new BadRequestException(
+        `Cannot change request status from ${currentStatus} to ${newStatus}`,
+      );
+    }
+  }
+
+  // Update request status safely
   async updateRequestStatus(
     id: string,
     dto: UpdateRequestStatusDto,
+    user: AuthUser,
   ) {
     const request = await this.prisma.request.findUnique({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
     if (!request) {
       throw new NotFoundException('Request not found');
     }
 
-    if (request.status === dto.status) {
-      throw new BadRequestException(
-        'Request already has this status',
-      );
+    // Employees can update only requests assigned to them
+    if (user.role === UserRole.EMPLOYEE) {
+      const assignment = await this.prisma.requestAssignment.findFirst({
+        where: {
+          requestId: id,
+          employee: {
+            userId: user.userId,
+          },
+        },
+      });
+
+      if (!assignment) {
+        throw new ForbiddenException(
+          'You can only update requests assigned to you',
+        );
+      }
+    } else if (user.role !== UserRole.ADMIN) {
+      throw new ForbiddenException('Access denied');
     }
 
+    if (request.status === dto.status) {
+      throw new BadRequestException('Request already has this status');
+    }
+
+    this.validateStatusTransition(request.status, dto.status);
+
+    // Update status and history in one transaction.
+    // The status condition prevents simultaneous updates from overwriting each other.
     const updated = await this.prisma.$transaction(async (tx) => {
-      const updatedRequest = await tx.request.update({
-        where: { id },
+      const updateResult = await tx.request.updateMany({
+        where: {
+          id,
+          status: request.status,
+        },
         data: {
           status: dto.status,
+        },
+      });
+
+      if (updateResult.count === 0) {
+        throw new ConflictException(
+          'This request was updated by someone else. Please refresh and try again.',
+        );
+      }
+
+      await tx.requestStatusHistory.create({
+        data: {
+          requestId: id,
+          oldStatus: request.status,
+          newStatus: dto.status,
+          reason: dto.reason,
+        },
+      });
+
+      const updatedRequest = await tx.request.findUnique({
+        where: {
+          id,
         },
         include: {
           client: {
@@ -194,29 +354,25 @@ export class RequestsService {
         },
       });
 
-      await tx.requestStatusHistory.create({
-        data: {
-          requestId: id,
-          oldStatus: request.status,
-          newStatus: dto.status,
-          reason: dto.reason,
-        },
-      });
+      if (!updatedRequest) {
+        throw new NotFoundException('Request not found');
+      }
 
       return updatedRequest;
     });
 
-    // Get all administrators
+    // Get active administrators
     const admins = await this.prisma.user.findMany({
       where: {
         role: UserRole.ADMIN,
+        isActive: true,
       },
       select: {
         id: true,
       },
     });
 
-    // Collect recipients without duplicates
+    // Collect notification recipients without duplicates
     const recipients = new Set<string>([
       updated.client.userId,
       ...updated.assignments.map(
@@ -225,7 +381,6 @@ export class RequestsService {
       ...admins.map((admin) => admin.id),
     ]);
 
-    // Create notifications
     const results = await Promise.allSettled(
       Array.from(recipients).map((userId) =>
         this.notifications.create({
@@ -238,7 +393,6 @@ export class RequestsService {
       ),
     );
 
-    // Log notification errors
     results.forEach((result) => {
       if (result.status === 'rejected') {
         console.error(
@@ -252,21 +406,64 @@ export class RequestsService {
   }
 
   // Assign request to employee
-  async assignRequest(id: string, dto: AssignRequestDto) {
+  async assignRequest(
+    id: string,
+    dto: AssignRequestDto,
+    user: AuthUser,
+  ) {
+    // Check role inside the service as well
+    if (user.role !== UserRole.ADMIN) {
+      throw new ForbiddenException(
+        'Only administrators can assign requests',
+      );
+    }
+
     const request = await this.prisma.request.findUnique({
-      where: { id },
+      where: {
+        id,
+      },
     });
 
     if (!request) {
       throw new NotFoundException('Request not found');
     }
 
+    // Prevent assigning employees to completed or cancelled requests
+    if (
+      request.status === 'COMPLETED' ||
+      request.status === 'CANCELLED'
+    ) {
+      throw new BadRequestException(
+        'Cannot assign an employee to a completed or cancelled request',
+      );
+    }
+
     const employee = await this.prisma.employee.findUnique({
-      where: { id: dto.employeeId },
+      where: {
+        id: dto.employeeId,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            role: true,
+            isActive: true,
+          },
+        },
+      },
     });
 
     if (!employee) {
       throw new NotFoundException('Employee not found');
+    }
+
+    if (
+      employee.user.role !== UserRole.EMPLOYEE ||
+      !employee.user.isActive
+    ) {
+      throw new BadRequestException(
+        'Employee account is inactive or invalid',
+      );
     }
 
     const existingAssignment =
@@ -309,7 +506,6 @@ export class RequestsService {
       },
     });
 
-    // Notify employee and client
     await Promise.allSettled([
       this.notifications.create({
         userId: assignment.employee.user.id,

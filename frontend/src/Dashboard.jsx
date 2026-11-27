@@ -1,5 +1,6 @@
 
 import { useEffect, useState } from 'react';
+
 import {
   LayoutDashboard,
   ClipboardList,
@@ -26,16 +27,16 @@ import Requests from './Requests';
 import Documents from './Documents';
 import NotificationsBell from './NotificationsBell';
 
-import { getDashboard } from './api';
+import { getDashboard, getRequests } from './api';
 import './App.css';
 
 const navigation = [
-  { label: 'Dashboard', icon: LayoutDashboard },
-  { label: 'Requests', icon: ClipboardList },
-  { label: 'Clients', icon: Users },
-  { label: 'Employees', icon: UserRound },
-  { label: 'Services', icon: BriefcaseBusiness },
-  { label: 'Documents', icon: FileText },
+  { label: 'Dashboard', icon: LayoutDashboard, roles: ['ADMIN', 'EMPLOYEE', 'CLIENT'] },
+  { label: 'Requests', icon: ClipboardList, roles: ['ADMIN', 'EMPLOYEE', 'CLIENT'] },
+  { label: 'Clients', icon: Users, roles: ['ADMIN'] },
+  { label: 'Employees', icon: UserRound, roles: ['ADMIN'] },
+  { label: 'Services', icon: BriefcaseBusiness, roles: ['ADMIN'] },
+  { label: 'Documents', icon: FileText, roles: ['ADMIN', 'EMPLOYEE', 'CLIENT'] },
 ];
 
 const statusLabels = {
@@ -46,18 +47,88 @@ const statusLabels = {
   CANCELLED: 'Cancelled',
 };
 
-export default function Dashboard({ onLogout }) {
+const roleLabels = {
+  ADMIN: 'Administrator',
+  EMPLOYEE: 'Employee',
+  CLIENT: 'Client',
+};
+
+export default function Dashboard({ user, onLogout }) {
   const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [employeeRequests, setEmployeeRequests] = useState([]);
+  const [clientRequests, setClientRequests] = useState([]);
+
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+
   const [activePage, setActivePage] = useState('Dashboard');
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  const role = user?.role?.toUpperCase() || '';
+
+  const isAdmin = role === 'ADMIN';
+  const isEmployee = role === 'EMPLOYEE';
+  const isClient = role === 'CLIENT';
+
+  const canCreateRequest = role === 'ADMIN' || role === 'CLIENT';
+
+  const userName = user?.name || user?.email || 'User';
+  const userInitial = userName.charAt(0).toUpperCase();
+  const roleName = roleLabels[role] || 'User';
+
+  const allowedNavigation = navigation.filter((item) =>
+    item.roles.includes(role)
+  );
+
+  const allowedPages = allowedNavigation.map((item) => item.label);
+
+  const handleNavigate = (page) => {
+    if (allowedPages.includes(page)) {
+      setActivePage(page);
+      setMobileOpen(false);
+    }
+  };
+
+  // Load dashboard data according to the logged-in user's role
   useEffect(() => {
     const loadDashboard = async () => {
+      if (!isAdmin && !isEmployee && !isClient) {
+        setLoading(false);
+        return;
+      }
+
+      setLoading(true);
+      setError('');
+
       try {
-        const result = await getDashboard();
-        setData(result);
+        if (isAdmin) {
+          const result = await getDashboard();
+          setData(result);
+        }
+
+        if (isEmployee) {
+          const result = await getRequests();
+
+          const requests = Array.isArray(result)
+            ? result
+            : Array.isArray(result?.data)
+              ? result.data
+              : [];
+
+          setEmployeeRequests(requests);
+        }
+
+        if (isClient) {
+          const result = await getRequests();
+
+          const requests = Array.isArray(result)
+            ? result
+            : Array.isArray(result?.data)
+              ? result.data
+              : [];
+
+          setClientRequests(requests);
+        }
       } catch (err) {
         setError(
           err.response?.data?.message ||
@@ -69,10 +140,76 @@ export default function Dashboard({ onLogout }) {
     };
 
     loadDashboard();
-  }, []);
+  }, [isAdmin, isEmployee, isClient]);
 
   const totals = data?.totals || {};
   const statuses = data?.requestsByStatus || {};
+
+  // Employee statistics
+  const employeeStats = {
+    total: employeeRequests.length,
+
+    new: employeeRequests.filter(
+      (request) => request.status === 'NEW'
+    ).length,
+
+    inProgress: employeeRequests.filter(
+      (request) => request.status === 'IN_PROGRESS'
+    ).length,
+
+    completed: employeeRequests.filter(
+      (request) => request.status === 'COMPLETED'
+    ).length,
+
+    waiting: employeeRequests.filter(
+      (request) => request.status === 'WAITING_FOR_CLIENT'
+    ).length,
+
+    cancelled: employeeRequests.filter(
+      (request) => request.status === 'CANCELLED'
+    ).length,
+  };
+
+  const recentEmployeeRequests = [...employeeRequests]
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() -
+        new Date(a.createdAt).getTime()
+    )
+    .slice(0, 5);
+
+  // Client statistics
+  const clientStats = {
+    total: clientRequests.length,
+
+    new: clientRequests.filter(
+      (request) => request.status === 'NEW'
+    ).length,
+
+    inProgress: clientRequests.filter(
+      (request) => request.status === 'IN_PROGRESS'
+    ).length,
+
+    completed: clientRequests.filter(
+      (request) => request.status === 'COMPLETED'
+    ).length,
+
+    waiting: clientRequests.filter(
+      (request) => request.status === 'WAITING_FOR_CLIENT'
+    ).length,
+
+    cancelled: clientRequests.filter(
+      (request) => request.status === 'CANCELLED'
+    ).length,
+  };
+
+  const recentClientRequests = [...clientRequests]
+    .sort(
+      (a, b) =>
+        new Date(b.createdAt).getTime() -
+        new Date(a.createdAt).getTime()
+    )
+    .slice(0, 5);
 
   const stats = [
     {
@@ -102,6 +239,37 @@ export default function Dashboard({ onLogout }) {
       icon: ClipboardList,
       color: 'green',
       note: 'All submitted requests',
+    },
+  ];
+
+  const employeeCards = [
+    {
+      label: 'Assigned Requests',
+      value: employeeStats.total,
+      icon: ClipboardList,
+      color: 'purple',
+      note: 'Requests assigned to you',
+    },
+    {
+      label: 'New Requests',
+      value: employeeStats.new,
+      icon: AlertCircle,
+      color: 'blue',
+      note: 'Waiting to be started',
+    },
+    {
+      label: 'In Progress',
+      value: employeeStats.inProgress,
+      icon: Activity,
+      color: 'orange',
+      note: 'Currently working on',
+    },
+    {
+      label: 'Completed',
+      value: employeeStats.completed,
+      icon: CheckCircle2,
+      color: 'green',
+      note: 'Successfully completed',
     },
   ];
 
@@ -143,16 +311,13 @@ export default function Dashboard({ onLogout }) {
         <p className="nav-caption">WORKSPACE</p>
 
         <nav>
-          {navigation.map(({ label, icon: Icon }) => (
+          {allowedNavigation.map(({ label, icon: Icon }) => (
             <button
               key={label}
               className={`nav-item ${
                 activePage === label ? 'active' : ''
               }`}
-              onClick={() => {
-                setActivePage(label);
-                setMobileOpen(false);
-              }}
+              onClick={() => handleNavigate(label)}
             >
               <Icon size={17} />
               {label}
@@ -162,11 +327,11 @@ export default function Dashboard({ onLogout }) {
 
         <div className="sidebar-bottom">
           <div className="profile">
-            <div className="avatar">A</div>
+            <div className="avatar">{userInitial}</div>
 
             <div className="profile-info">
-              <strong>Administrator</strong>
-              <span>Admin account</span>
+              <strong>{userName}</strong>
+              <span>{roleName}</span>
             </div>
 
             <button
@@ -199,9 +364,9 @@ export default function Dashboard({ onLogout }) {
               <input placeholder="Search..." />
             </div>
 
-            <NotificationsBell onNavigate={setActivePage} />
+            <NotificationsBell onNavigate={handleNavigate} />
 
-            <div className="top-avatar">A</div>
+            <div className="top-avatar">{userInitial}</div>
           </div>
         </header>
 
@@ -217,14 +382,16 @@ export default function Dashboard({ onLogout }) {
               <h1>{activePage}</h1>
 
               <p className="subtitle">
-                Manage your workspace and monitor business activity.
+                {activePage === 'Dashboard'
+                  ? `Welcome back, ${userName}.`
+                  : 'Manage your workspace and monitor business activity.'}
               </p>
             </div>
 
-            {activePage === 'Dashboard' && (
+            {activePage === 'Dashboard' && canCreateRequest && (
               <button
                 className="primary-button"
-                onClick={() => setActivePage('Requests')}
+                onClick={() => handleNavigate('Requests')}
               >
                 <Plus size={16} />
                 New Request
@@ -254,7 +421,8 @@ export default function Dashboard({ onLogout }) {
                 </div>
               )}
 
-              {!loading && !error && (
+              {/* ADMIN DASHBOARD */}
+              {!loading && !error && isAdmin && (
                 <>
                   <div className="stats-grid">
                     {stats.map((stat) => {
@@ -334,10 +502,7 @@ export default function Dashboard({ onLogout }) {
                           <p>System statistics</p>
                         </div>
 
-                        <ArrowUpRight
-                          size={18}
-                          color="#999cff"
-                        />
+                        <ArrowUpRight size={18} color="#999cff" />
                       </div>
 
                       <div className="summary-list">
@@ -382,14 +547,285 @@ export default function Dashboard({ onLogout }) {
                   </div>
                 </>
               )}
+
+              {/* EMPLOYEE DASHBOARD */}
+              {!loading && !error && isEmployee && (
+                <>
+                  <div className="stats-grid">
+                    {employeeCards.map((stat) => {
+                      const Icon = stat.icon;
+
+                      return (
+                        <div className="stat-card" key={stat.label}>
+                          <div className="stat-top">
+                            <span>{stat.label}</span>
+
+                            <div className={`stat-icon ${stat.color}`}>
+                              <Icon size={18} />
+                            </div>
+                          </div>
+
+                          <h2>{stat.value}</h2>
+                          <p>{stat.note}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="content-grid">
+                    <div className="panel">
+                      <div className="panel-heading">
+                        <div>
+                          <h3>My Tasks Overview</h3>
+                          <p>Status of your assigned requests</p>
+                        </div>
+
+                        <Activity size={19} color="#999cff" />
+                      </div>
+
+                      <div className="summary-list">
+                        {Object.entries(statusLabels).map(
+                          ([key, label]) => {
+                            const count = employeeRequests.filter(
+                              (request) => request.status === key
+                            ).length;
+
+                            return (
+                              <div key={key}>
+                                <span
+                                  className={`summary-icon ${
+                                    key === 'COMPLETED'
+                                      ? 'green-bg'
+                                      : key === 'IN_PROGRESS'
+                                        ? 'blue-bg'
+                                        : key === 'WAITING_FOR_CLIENT'
+                                          ? 'orange-bg'
+                                          : 'purple-bg'
+                                  }`}
+                                >
+                                  {key === 'COMPLETED' ? (
+                                    <CheckCircle2 size={16} />
+                                  ) : key === 'IN_PROGRESS' ? (
+                                    <Activity size={16} />
+                                  ) : (
+                                    <Clock3 size={16} />
+                                  )}
+                                </span>
+
+                                {label}
+                                <strong>{count}</strong>
+                              </div>
+                            );
+                          }
+                        )}
+                      </div>
+
+                      <div className="summary-footer">
+                        <span>My assigned requests</span>
+                        <strong>{employeeStats.total}</strong>
+                      </div>
+                    </div>
+
+                    <div className="panel">
+                      <div className="panel-heading">
+                        <div>
+                          <h3>Work Summary</h3>
+                          <p>Your current workload</p>
+                        </div>
+
+                        <ArrowUpRight size={18} color="#999cff" />
+                      </div>
+
+                      <div className="summary-list">
+                        <div>
+                          <span className="summary-icon blue-bg">
+                            <ClipboardList size={16} />
+                          </span>
+                          New tasks
+                          <strong>{employeeStats.new}</strong>
+                        </div>
+
+                        <div>
+                          <span className="summary-icon orange-bg">
+                            <Clock3 size={16} />
+                          </span>
+                          Waiting for client
+                          <strong>{employeeStats.waiting}</strong>
+                        </div>
+
+                        <div>
+                          <span className="summary-icon green-bg">
+                            <CheckCircle2 size={16} />
+                          </span>
+                          Completed
+                          <strong>{employeeStats.completed}</strong>
+                        </div>
+                      </div>
+
+                      <div className="summary-footer">
+                        <span>Account role</span>
+                        <strong>Employee</strong>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="panel employee-tasks-panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h3>My Recent Tasks</h3>
+                        <p>Your latest assigned requests</p>
+                      </div>
+
+                      <button
+                        className="primary-button"
+                        onClick={() => handleNavigate('Requests')}
+                      >
+                        View All
+                        <ArrowUpRight size={16} />
+                      </button>
+                    </div>
+
+                    {recentEmployeeRequests.length === 0 ? (
+                      <div className="empty-state">
+                        <ClipboardList size={25} />
+                        <h3>No assigned requests yet</h3>
+                        <p>
+                          Requests assigned to you will appear here.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="summary-list">
+                        {recentEmployeeRequests.map((request) => (
+                          <div
+                            key={request.id}
+                            className="employee-task-row"
+                          >
+                            <span className="summary-icon blue-bg">
+                              <ClipboardList size={16} />
+                            </span>
+
+                            <div className="employee-task-info">
+                              <strong>
+                                {request.title || request.service?.name || 'Request'}
+                              </strong>
+
+                              <span>
+                                {request.service?.name || 'Service'}
+                                {' · '}
+                                {request.createdAt
+                                  ? new Date(request.createdAt).toLocaleDateString()
+                                  : 'Date unavailable'}
+                              </span>
+                            </div>
+
+                            <span className="employee-task-status">
+                              {statusLabels[request.status] || request.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="bottom-note">
+                    <span className="live-dot" />
+                    Showing requests assigned to your account only
+                  </div>
+                </>
+              )}
+
+              {/* CLIENT DASHBOARD */}
+              {!loading && !error && isClient && (
+                <>
+                  <div className="panel employee-tasks-panel">
+                    <div className="panel-heading">
+                      <div>
+                        <h3>Welcome to ClientFlow</h3>
+                        <p>Track your service requests</p>
+                      </div>
+
+                      <ClipboardList size={22} color="#999cff" />
+                    </div>
+
+                    <h2>{clientStats.total} Requests</h2>
+
+                    <p className="subtitle">Your recent requests</p>
+
+                    {clientRequests.length === 0 ? (
+                      <div className="empty-state">
+                        <ClipboardList size={25} />
+                        <h3>No requests yet</h3>
+                        <p>
+                          You haven't submitted any requests yet.
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="summary-list">
+                        {recentClientRequests.map((request) => (
+                          <div
+                            key={request.id}
+                            className="employee-task-row"
+                          >
+                            <span className="summary-icon blue-bg">
+                              <ClipboardList size={16} />
+                            </span>
+
+                            <div className="employee-task-info">
+                              <strong>
+                                {request.title || request.service?.name || 'Request'}
+                              </strong>
+
+                              <span>
+                                {request.service?.name || 'Service'}
+                                {' · '}
+                                {request.createdAt
+                                  ? new Date(request.createdAt).toLocaleDateString()
+                                  : 'Date unavailable'}
+                              </span>
+                            </div>
+
+                            <span className="employee-task-status">
+                              {statusLabels[request.status] || request.status}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <div className="summary-footer">
+                      <span>Total requests</span>
+                      <strong>{clientStats.total}</strong>
+                    </div>
+
+                    <button
+                      className="primary-button"
+                      onClick={() => handleNavigate('Requests')}
+                    >
+                      <Plus size={16} />
+                      Create New Request
+                    </button>
+                  </div>
+                </>
+              )}
+
+              {!loading && !error && !isAdmin && !isEmployee && !isClient && (
+                <div className="panel empty-state">
+                  <LayoutDashboard size={26} />
+                  <h3>Welcome to ClientFlow</h3>
+                  <p>
+                    You are signed in as {roleName}. Use the workspace
+                    menu to access the pages available to your account.
+                  </p>
+                </div>
+              )}
             </>
           ) : activePage === 'Requests' ? (
-            <Requests />
-          ) : activePage === 'Clients' ? (
+            <Requests user={user} />
+          ) : activePage === 'Clients' && isAdmin ? (
             <Clients />
-          ) : activePage === 'Employees' ? (
+          ) : activePage === 'Employees' && isAdmin ? (
             <Employees />
-          ) : activePage === 'Services' ? (
+          ) : activePage === 'Services' && isAdmin ? (
             <Services />
           ) : activePage === 'Documents' ? (
             <Documents />
@@ -399,10 +835,10 @@ export default function Dashboard({ onLogout }) {
                 <FileText size={25} />
               </div>
 
-              <h3>{activePage}</h3>
+              <h3>Page unavailable</h3>
 
               <p>
-                This section will be connected to the backend next.
+                You do not have permission to access this page.
               </p>
             </div>
           )}
